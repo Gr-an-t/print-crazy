@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -97,18 +96,20 @@ func mDelete(client *mongo.Client, ctx context.Context, collectionName string, f
 }
 
 func connectToMongo() (*mongo.Client, context.Context) {
-	client, err := mongo.NewClient(options.Client().ApplyURI("mongodb://your_username:your_password@localhost:27017"))
+	mongoURI := "mongodb://grant:test@10.0.0.31:27017/leaderboardDB?authSource=admin"
+
+	client, err := mongo.NewClient(options.Client().ApplyURI(mongoURI))
 	if err != nil {
 		log.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+
+	// Use context.Background() without a timeout
+	ctx := context.Background()
+
 	err = client.Connect(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer client.Disconnect(ctx)
 
-	fmt.Println("Successfully connected to MongoDB!")
 	return client, ctx
 }
