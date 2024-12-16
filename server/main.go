@@ -2,116 +2,99 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/phin1x/go-ipp"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func mCreate(client *mongo.Client, ctx context.Context, data *bson.D) {
-	collection := client.Database("your_database").Collection("your_collection")
 
-	_, err := collection.InsertOne(ctx, data)
-
-	if err != nil {
-
-		log.Fatal(err)
-
+func validateAPIKey(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		apiKey := r.Header.Get("X-API-Key")
+		if _, valid := apiKeys[apiKey]; !valid {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
 	}
-
-	fmt.Println("Data inserted successfully!")
-
 }
 
-func mRead(client *mongo.Client, ctx context.Context, collectionName string) {
-	collection := client.Database("your_database").Collection(collectionName)
-
-	cursor, err := collection.Find(ctx, bson.D{})
-
-	if err != nil {
-
-		log.Fatal(err)
-
-	}
-
-	defer cursor.Close(ctx)
-
-	for cursor.Next(ctx) {
-
-		var result bson.M
-
-		err := cursor.Decode(&result)
-
-		if err != nil {
-
-			log.Fatal(err)
-
+func leaderboardInsertHandler(client *mongo.Client, ctx context.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+			return
 		}
 
-		fmt.Println(result)
+		var requestData map[string]interface{}
+		err := json.NewDecoder(r.Body).Decode(&requestData)
+		if err != nil {
+			http.Error(w, "Invalid JSON data", http.StatusBadRequest)
+			return
+		}
 
+		data := bson.D{}
+		for key, value := range requestData {
+			data = append(data, bson.E{Key: key, Value: value})
+		}
+
+		mCreate(client, ctx, &data)
+
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte("Data inserted successfully"))
 	}
-
-	if err := cursor.Err(); err != nil {
-
-		log.Fatal(err)
-
-	}
-
 }
 
-func mUpdate(client *mongo.Client, ctx context.Context, collectionName string, filter *bson.D, data *bson.D) {
-	collection := client.Database("your_database").Collection(collectionName)
+func leaderboardUpdateHandler(client *mongo.Client, ctx context.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+			return
+		}
 
-	update := data
+		var requestData struct {
+			Filter map[string]interface{} `json:"filter"` // MongoDB filter criteria
+			Update map[string]interface{} `json:"update"` // Update data
+		}
 
-	_, err := collection.UpdateOne(ctx, filter, update)
+		// Parse and validate JSON input
+		err := json.NewDecoder(r.Body).Decode(&requestData)
+		if err != nil {
+			http.Error(w, "Invalid JSON data", http.StatusBadRequest)
+			return
+		}
+		if len(requestData.Filter) == 0 || len(requestData.Update) == 0 {
+			http.Error(w, "Filter and update fields cannot be empty", http.StatusBadRequest)
+			return
+		}
 
-	if err != nil {
+		// Convert input to BSON
+		filter := bson.D{}
+		for key, value := range requestData.Filter {
+			filter = append(filter, bson.E{Key: key, Value: value})
+		}
+		update := bson.D{{Key: "$set", Value: requestData.Update}}
 
-		log.Fatal(err)
+		// Call mUpdate to perform the update
+		err = mUpdate(client, ctx, "your_collection", &filter, &update)
+		if err != nil {
+			if err.Error() == "no documents matched the filter" {
+				http.Error(w, err.Error(), http.StatusNotFound)
+			} else {
+				http.Error(w, "Error updating document", http.StatusInternalServerError)
+				log.Println("Update error:", err)
+			}
+			return
+		}
 
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Document updated successfully!"))
 	}
-
-	fmt.Println("Data updated successfully!")
-
-}
-
-func mDelete(client *mongo.Client, ctx context.Context, collectionName string, filter *bson.D) {
-	collection := client.Database("your_database").Collection(collectionName)
-
-	_, err := collection.DeleteOne(ctx, filter)
-
-	if err != nil {
-
-		log.Fatal(err)
-
-	}
-
-	fmt.Println("Data deleted successfully!")
-
-}
-
-func connectToMongo() (*mongo.Client, context.Context) {
-	client, err := mongo.NewClient(options.Client().ApplyURI("mongodb://your_username:your_password@localhost:27017"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	err = client.Connect(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer client.Disconnect(ctx)
-
-	fmt.Println("Successfully connected to MongoDB!")
-	return client, ctx
 }
 
 func main() {
@@ -125,6 +108,11 @@ func main() {
 		w.Write([]byte("Hello!"))
 	})
 	http.ListenAndServe(":8676", nil)
+
+	http.HandleFunc("/leaderboardInsert", leaderboardInsertHandler(mongoClient, ctx))
+
+	http.HandleFunc("/leaderboardUpdate", validateAPIKey(leaderboardUpdateHandler(mongoClient, ctx)))
+	
 
 	printClient := ipp.NewIPPClient("printserver", 631, "user", "password", true)
 	// print file
